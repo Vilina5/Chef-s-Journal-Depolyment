@@ -1,0 +1,7 @@
+{
+  "name": "Chef's Journal",
+  "description": "一个由 AI 驱动的综合菜谱管理、膳食规划和烹饪日记应用。",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
