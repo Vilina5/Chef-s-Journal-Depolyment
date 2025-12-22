@@ -1,1 +1,0 @@
-import './ws/src/app/App';
