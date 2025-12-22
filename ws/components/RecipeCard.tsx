@@ -1,5 +1,5 @@
 import React from 'react';
-import { Recipe } from '../ws/src/types/types';
+import { Recipe } from '../src/types/types';
 import { Icon } from './Icon';
 
 interface RecipeCardProps {

@@ -1,3 +1,4 @@
+"use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { AppView, Recipe, DailyPlan, MealLog, Ingredient, ShoppingItem, User, LogEntry } from '../types';
@@ -6,6 +7,8 @@ import { BottomNav} from '../components/BottomNav';
 import {RecipeCard} from '../components/RecipeCard';
 import Icon from '../components/Icon';
 import { v4 as uuidv4 } from 'uuid';
+import './globals.css';
+import { syncService, AppState } from '../services/syncService'; 
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -26,16 +29,6 @@ ChartJS.register(
   Legend
 );
 
-
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  BarElement,
-  Title,
-  Tooltip,
-  Legend
-);
-
 // --- Local Storage Keys ---
 const STORAGE_KEY_RECIPES = 'chefs_journal_recipes';
 const STORAGE_KEY_PLANS = 'chefs_journal_plans';
@@ -45,8 +38,14 @@ const STORAGE_KEY_CURRENT_USER_ID = 'chefs_journal_current_user_id';
 
 // --- Sub-Components ---
 
-const LoginView = ({ onLogin }: { onLogin: (name: string) => void }) => {
+// 修改 LoginView 组件
+const LoginView = ({ onLogin }: { onLogin: (name: string, phone: string) => void }) => {
   const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+
+  // 简单的手机号校验
+  const isValidPhone = /^1[3-9]\d{9}$/.test(phone);
+
   return (
       <div className="flex flex-col items-center justify-center h-full p-8 bg-sage-50">
           <div className="mb-8 text-center">
@@ -57,20 +56,35 @@ const LoginView = ({ onLogin }: { onLogin: (name: string) => void }) => {
               <p className="text-sage-500">记录每一餐的温暖与美味</p>
           </div>
           <div className="w-full max-w-xs space-y-4">
-              <input 
-                type="text" 
-                placeholder="请输入你的昵称" 
-                value={name}
-                onChange={e => setName(e.target.value)}
-                className="w-full p-4 rounded-xl border border-sage-200 focus:ring-2 focus:ring-terracotta-500 outline-none text-center"
-              />
+              <div>
+                <input 
+                  type="text" 
+                  placeholder="请输入你的昵称" 
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  className="w-full p-4 rounded-xl border border-sage-200 focus:ring-2 focus:ring-terracotta-500 outline-none text-center"
+                />
+              </div>
+              <div>
+                <input 
+                  type="tel" 
+                  placeholder="请输入手机号 (用于身份识别)" 
+                  value={phone}
+                  maxLength={11}
+                  onChange={e => setPhone(e.target.value)}
+                  className="w-full p-4 rounded-xl border border-sage-200 focus:ring-2 focus:ring-terracotta-500 outline-none text-center font-mono"
+                />
+              </div>
               <button 
-                onClick={() => onLogin(name)}
-                disabled={!name.trim()}
-                className="w-full bg-terracotta-500 text-white py-3 rounded-xl font-bold hover:bg-terracotta-600 disabled:opacity-50 transition-colors"
+                onClick={() => onLogin(name, phone)}
+                disabled={!name.trim() || !isValidPhone}
+                className="w-full bg-terracotta-500 text-white py-3 rounded-xl font-bold hover:bg-terracotta-600 disabled:opacity-50 transition-colors shadow-lg"
               >
                 进入厨房
               </button>
+              <p className="text-xs text-center text-sage-400">
+                手机号仅用于家庭内部识别，无需验证码
+              </p>
           </div>
       </div>
   );
@@ -99,48 +113,181 @@ const App = () => {
   const [shoppingCart, setShoppingCart] = useState<Record<string, { bought: boolean; cost: number }>>({});
   const [showPlanSelector, setShowPlanSelector] = useState(false);
 
+  // sync state 
+  const [familyId, setFamilyId] = useState<string>('');
+  const [isOnline, setIsOnline] = useState(true);
+
   // --- Effects ---
-  useEffect(() => {
-    const loadedRecipes = localStorage.getItem(STORAGE_KEY_RECIPES);
-    const loadedPlans = localStorage.getItem(STORAGE_KEY_PLANS);
-    const loadedLogs = localStorage.getItem(STORAGE_KEY_LOGS);
-    const loadedUsers = localStorage.getItem(STORAGE_KEY_USERS);
-    const currentUserId = localStorage.getItem(STORAGE_KEY_CURRENT_USER_ID);
-    const cart = localStorage.getItem('shopping_cart');
+    useEffect(() => {
+    const initApp = async () => {
+        // 1. 获取或生成 Family ID
+        let activeFid = localStorage.getItem('chefs_journal_family_id');
+        if (!activeFid) {
+            activeFid = uuidv4().slice(0, 8).toUpperCase();
+            localStorage.setItem('chefs_journal_family_id', activeFid);
+        }
+        setFamilyId(activeFid);
 
-    if (loadedRecipes) setRecipes(JSON.parse(loadedRecipes));
-    if (loadedPlans) setPlans(JSON.parse(loadedPlans));
-    if (loadedLogs) {
-        const rawLogs = JSON.parse(loadedLogs);
-        const migratedLogs = rawLogs.map((log: any) => {
-            if (!log.entries && (log.notes || log.photo)) {
-                return { ...log, entries: [{ userId: 'legacy', notes: log.notes || '', photo: log.photo }] };
-            }
-            return log;
-        });
-        setMealLogs(migratedLogs);
-    }
-
-    if (loadedUsers) {
-        const parsedUsers = JSON.parse(loadedUsers);
-        setUsers(parsedUsers);
-        if (currentUserId) {
-            const user = parsedUsers.find((u: User) => u.id === currentUserId);
-            if (user) {
-                setCurrentUser(user);
-                setView(AppView.RECIPES);
-            } else {
-                setView(AppView.LOGIN);
-            }
+        // 2. 优先尝试从云端拉取数据
+        const cloudData = await syncService.pullData(activeFid);
+        
+        if (cloudData) {
+            // 云端有数据，直接使用云端数据
+            setRecipes(cloudData.recipes || []);
+            setPlans(cloudData.plans || []);
+            setMealLogs(cloudData.mealLogs || []);
+            setUsers(cloudData.users || []);
+            setShoppingCart(cloudData.shoppingCart || {});
         } else {
+            // 云端是空的（新家庭），加载本地缓存兜底
+            const loadedRecipes = localStorage.getItem(STORAGE_KEY_RECIPES);
+            const loadedPlans = localStorage.getItem(STORAGE_KEY_PLANS);
+            const loadedLogs = localStorage.getItem(STORAGE_KEY_LOGS);
+            const loadedUsers = localStorage.getItem(STORAGE_KEY_USERS);
+            const cart = localStorage.getItem('shopping_cart');
+
+            if (loadedRecipes) setRecipes(JSON.parse(loadedRecipes));
+            if (loadedPlans) setPlans(JSON.parse(loadedPlans));
+            if (loadedLogs) setMealLogs(JSON.parse(loadedLogs));
+            if (loadedUsers) setUsers(JSON.parse(loadedUsers));
+            if (cart) setShoppingCart(JSON.parse(cart));
+        }
+        
+        // 恢复当前用户状态
+        const savedUserId = localStorage.getItem(STORAGE_KEY_CURRENT_USER_ID);
+        const savedPhone = localStorage.getItem('chefs_journal_user_phone');
+        
+        let foundUser = null;
+
+        // 策略 A: 优先通过 ID 找
+        if (cloudData && savedUserId) {
+            foundUser = cloudData.users?.find((u: User) => u.id === savedUserId);
+        }
+        
+        // 策略 B: 如果 ID 没找到（可能换了手机），尝试用手机号找
+        if (!foundUser && cloudData && savedPhone) {
+            foundUser = cloudData.users?.find((u: User) => u.phoneNumber === savedPhone);
+            // 如果通过手机号找回了账号，更新本地存储的 ID
+            if (foundUser) {
+                localStorage.setItem(STORAGE_KEY_CURRENT_USER_ID, foundUser.id);
+                console.log("通过手机号找回了老账号:", foundUser.name);
+            }
+        }
+
+        // 策略 C: 如果是本地初始化
+        if (!foundUser && users.length > 0 && savedUserId) {
+             foundUser = users.find(u => u.id === savedUserId);
+        }
+
+        if (foundUser) {
+            setCurrentUser(foundUser);
+            // 确保 state 里的 users 也是最新的
+            if (cloudData) setUsers(cloudData.users);
+        } else {
+            // 如果既没有 ID 也没有手机号匹配，说明是纯新设备，去登录页
             setView(AppView.LOGIN);
         }
-    } else {
-        setView(AppView.LOGIN);
-    }
-    
-    if(cart) setShoppingCart(JSON.parse(cart));
+        // 这里稍微延迟一下设置 user，确保 users 数组已更新
+        setTimeout(() => {
+             // 重新获取一下最新的 users 状态比较困难，这里依赖后续 render 或简单处理
+             // 在实际运行中，users state 更新会触发下方的 useEffect
+        }, 0);
+    };
+
+    initApp();
   }, []);
+
+  // 恢复用户的辅助 Effect
+  useEffect(() => {
+      const savedUserId = localStorage.getItem(STORAGE_KEY_CURRENT_USER_ID);
+      if (savedUserId && users.length > 0 && !currentUser) {
+          const user = users.find(u => u.id === savedUserId);
+          if (user) setCurrentUser(user);
+          else setView(AppView.LOGIN); // 找不到用户去登录
+      }
+  }, [users]); // 当 users 同步回来后，自动登录
+
+  // --- Sync Logic: 自动推送 (当本地数据变化时) ---
+  useEffect(() => {
+    if (!familyId) return;
+
+    const dataPayload: AppState = {
+        recipes,
+        plans,
+        mealLogs,
+        users,
+        shoppingCart
+    };
+
+    // 防抖：1秒内没有操作才保存，避免频繁请求
+    const timer = setTimeout(() => {
+        syncService.pushData(familyId, dataPayload);
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [recipes, plans, mealLogs, users, shoppingCart, familyId]);
+
+  // --- Sync Logic: 自动拉取 (实现彼此可见) ---
+  useEffect(() => {
+    if (!familyId) return;
+
+    // 每 3 秒从服务器拉取一次最新数据
+    const interval = setInterval(async () => {
+        const cloudData = await syncService.pullData(familyId);
+        if (cloudData) {
+            // 简单粗暴对比，有变化就更新 (React 会处理 Diff)
+            // 注意：正在输入时可能会有轻微冲突，这是简单同步方案的代价
+            if (JSON.stringify(cloudData.recipes) !== JSON.stringify(recipes)) setRecipes(cloudData.recipes);
+            if (JSON.stringify(cloudData.plans) !== JSON.stringify(plans)) setPlans(cloudData.plans);
+            if (JSON.stringify(cloudData.mealLogs) !== JSON.stringify(mealLogs)) setMealLogs(cloudData.mealLogs);
+            if (JSON.stringify(cloudData.users) !== JSON.stringify(users)) setUsers(cloudData.users);
+            if (JSON.stringify(cloudData.shoppingCart) !== JSON.stringify(shoppingCart)) setShoppingCart(cloudData.shoppingCart);
+        }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [familyId, recipes, plans, mealLogs, users, shoppingCart]);
+  // useEffect(() => {
+  //   const loadedRecipes = localStorage.getItem(STORAGE_KEY_RECIPES);
+  //   const loadedPlans = localStorage.getItem(STORAGE_KEY_PLANS);
+  //   const loadedLogs = localStorage.getItem(STORAGE_KEY_LOGS);
+  //   const loadedUsers = localStorage.getItem(STORAGE_KEY_USERS);
+  //   const currentUserId = localStorage.getItem(STORAGE_KEY_CURRENT_USER_ID);
+  //   const cart = localStorage.getItem('shopping_cart');
+
+  //   if (loadedRecipes) setRecipes(JSON.parse(loadedRecipes));
+  //   if (loadedPlans) setPlans(JSON.parse(loadedPlans));
+  //   if (loadedLogs) {
+  //       const rawLogs = JSON.parse(loadedLogs);
+  //       const migratedLogs = rawLogs.map((log: any) => {
+  //           if (!log.entries && (log.notes || log.photo)) {
+  //               return { ...log, entries: [{ userId: 'legacy', notes: log.notes || '', photo: log.photo }] };
+  //           }
+  //           return log;
+  //       });
+  //       setMealLogs(migratedLogs);
+  //   }
+
+  //   if (loadedUsers) {
+  //       const parsedUsers = JSON.parse(loadedUsers);
+  //       setUsers(parsedUsers);
+  //       if (currentUserId) {
+  //           const user = parsedUsers.find((u: User) => u.id === currentUserId);
+  //           if (user) {
+  //               setCurrentUser(user);
+  //               setView(AppView.RECIPES);
+  //           } else {
+  //               setView(AppView.LOGIN);
+  //           }
+  //       } else {
+  //           setView(AppView.LOGIN);
+  //       }
+  //   } else {
+  //       setView(AppView.LOGIN);
+  //   }
+    
+  //   if(cart) setShoppingCart(JSON.parse(cart));
+  // }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_RECIPES, JSON.stringify(recipes));
@@ -162,17 +309,33 @@ const App = () => {
      localStorage.setItem('shopping_cart', JSON.stringify(shoppingCart));
   }, [shoppingCart]);
 
-  // Handle User Session Changes
-  const handleLogin = (name: string) => {
-      const newUser: User = {
-          id: uuidv4().slice(0, 8), 
-          name,
-          color: ['bg-terracotta-500', 'bg-sage-500', 'bg-blue-500', 'bg-pink-500'][Math.floor(Math.random() * 4)]
-      };
-      const updatedUsers = [...users, newUser];
-      setUsers(updatedUsers);
-      setCurrentUser(newUser);
-      localStorage.setItem(STORAGE_KEY_CURRENT_USER_ID, newUser.id);
+// 在 App 组件内
+  const handleLogin = (name: string, phone: string) => {
+      // 1. 先检查当前已有的 users 里有没有这个手机号
+      const existingUser = users.find(u => u.phoneNumber === phone);
+      
+      if (existingUser) {
+          // 如果找到了老用户，直接登录
+          setCurrentUser(existingUser);
+          localStorage.setItem(STORAGE_KEY_CURRENT_USER_ID, existingUser.id);
+      } else {
+          // 如果是新用户，创建
+          const newUser: User = {
+              id: uuidv4().slice(0, 8), 
+              name,
+              phoneNumber: phone, // [新增]
+              color: ['bg-terracotta-500', 'bg-sage-500', 'bg-blue-500', 'bg-pink-500', 'bg-amber-500', 'bg-purple-500'][Math.floor(Math.random() * 6)]
+          };
+          
+          // 更新状态
+          const updatedUsers = [...users, newUser];
+          setUsers(updatedUsers);
+          setCurrentUser(newUser);
+          localStorage.setItem(STORAGE_KEY_CURRENT_USER_ID, newUser.id);
+      }
+      
+      // 无论如何，都把手机号存一下，防止刷新丢失
+      localStorage.setItem('chefs_journal_user_phone', phone);
       setView(AppView.RECIPES);
   };
 
@@ -935,7 +1098,7 @@ const App = () => {
     );
   };
 
-  const renderProfile = () => (
+const renderProfile = () => (
       <div className="p-4 bg-sage-50 h-full overflow-y-auto no-scrollbar">
           <button onClick={() => setView(AppView.RECIPES)} className="mb-6 text-sage-500">
             <Icon name="arrow-left" className="text-xl" /> 返回
@@ -943,6 +1106,7 @@ const App = () => {
           
           <h1 className="text-2xl font-bold text-sage-900 mb-6">账号管理</h1>
           
+          {/* 1. 当前用户信息 (保持不变) */}
           <div className="bg-white p-4 rounded-2xl shadow-sm mb-6">
               <div className="flex items-center gap-4 mb-4">
                   <div className={`w-16 h-16 rounded-full ${currentUser?.color} flex items-center justify-center text-white text-2xl font-bold`}>
@@ -955,34 +1119,117 @@ const App = () => {
               </div>
           </div>
 
+          {/* 2. 【新增】家庭云同步设置 (插入到这里) */}
+          <div className="bg-white p-4 rounded-2xl shadow-sm mb-6 border border-sage-100">
+             <div className="flex items-center gap-2 mb-3">
+                <Icon name="house-chimney" className="text-terracotta-500" />
+                <h3 className="text-sm font-semibold text-sage-700">家庭云同步</h3>
+             </div>
+             
+             {/* 显示当前 ID */}
+             <div className="flex flex-col gap-2 mb-4">
+                 <label className="text-xs text-sage-500">当前家庭 ID (分享给家人)</label>
+                 <div className="flex gap-2">
+                    <div className="flex-1 p-3 bg-sage-50 rounded-xl font-mono text-center font-bold text-terracotta-600 border border-sage-200 select-all tracking-widest">
+                        {familyId}
+                    </div>
+                    <button 
+                        onClick={() => {
+                            navigator.clipboard.writeText(familyId);
+                            alert("已复制 ID！发送给家人，让他们在下方输入即可加入。");
+                        }}
+                        className="bg-sage-200 text-sage-700 px-4 rounded-xl font-medium text-sm hover:bg-sage-300 active:scale-95 transition-transform"
+                    >
+                        复制
+                    </button>
+                 </div>
+             </div>
+
+             {/* 加入其他 ID */}
+             <div className="pt-4 border-t border-sage-100">
+                 <label className="text-xs text-sage-500 block mb-2">加入已有家庭 (输入对方 ID)</label>
+                 <div className="flex gap-2">
+                    <input 
+                        type="text" 
+                        placeholder="例如: AB12C3"
+                        id="join-family-input"
+                        className="flex-1 p-2 bg-white border border-sage-200 rounded-xl text-sm outline-none focus:border-terracotta-500 focus:ring-1 focus:ring-terracotta-500 transition-all uppercase"
+                    />
+                    <button 
+                        onClick={() => {
+                            const input = document.getElementById('join-family-input') as HTMLInputElement;
+                            const newId = input.value.trim().toUpperCase();
+                            
+                            if (!newId) return alert("请输入家庭 ID");
+                            if (newId === familyId) return alert("你已经在这个家庭中了");
+
+                            if(window.confirm(`确定要加入家庭 [${newId}] 吗？\n\n注意：切换后，当前页面的数据将会变成新家庭的数据。`)) {
+                                localStorage.setItem('chefs_journal_family_id', newId);
+                                window.location.reload(); // 强制刷新以加载新数据
+                            }
+                        }}
+                        className="bg-terracotta-500 text-white px-4 rounded-xl font-medium text-sm shadow-md hover:bg-terracotta-600 active:scale-95 transition-transform"
+                    >
+                        加入
+                    </button>
+                 </div>
+             </div>
+          </div>
+
+{/* 3. 家庭成员名单 (修改版：改为展示模式) */}
           <div className="bg-white p-4 rounded-2xl shadow-sm">
-              <h3 className="text-sm font-semibold text-sage-700 mb-4">切换家庭成员</h3>
-              <p className="text-xs text-sage-400 mb-4">选择当前使用设备的用户身份</p>
-              <div className="space-y-2">
-                  {users.map(u => (
-                      <button 
-                        key={u.id}
-                        onClick={() => handleSwitchUser(u.id)}
-                        disabled={u.id === currentUser?.id}
-                        className={`w-full p-3 rounded-xl flex items-center justify-between ${u.id === currentUser?.id ? 'bg-sage-50 opacity-50' : 'bg-white border border-sage-200 hover:bg-sage-50'}`}
-                      >
-                          <div className="flex items-center gap-3">
-                              <div className={`w-8 h-8 rounded-full ${u.color} flex items-center justify-center text-white text-xs`}>
-                                  {u.name[0]}
+              <h3 className="text-sm font-semibold text-sage-700 mb-4">家庭成员 ({users.length}人)</h3>
+              
+              <div className="space-y-3">
+                  {/* 遍历显示所有人 */}
+                  {users.map(u => {
+                      const isMe = u.id === currentUser?.id;
+                      return (
+                          <div 
+                            key={u.id}
+                            className={`flex items-center justify-between p-2 rounded-xl ${isMe ? 'bg-sage-50 border border-sage-200' : ''}`}
+                          >
+                              <div className="flex items-center gap-3">
+                                  {/* 头像 */}
+                                  <div className={`w-10 h-10 rounded-full ${u.color} flex items-center justify-center text-white text-sm shadow-sm ring-2 ring-white`}>
+                                      {u.name[0]}
+                                  </div>
+                                  
+                                  {/* 名字和状态 */}
+                                  <div className="flex flex-col">
+                                      <span className={`text-sm font-medium ${isMe ? 'text-sage-900' : 'text-sage-600'}`}>
+                                          {u.name}
+                                          {isMe && <span className="ml-2 text-xs text-terracotta-500 font-bold">(我)</span>}
+                                      </span>
+                                      {/* 显示 ID 后四位，方便区分同名 */}
+                                      <span className="text-[10px] text-sage-400">ID: {u.id.slice(0,4)}</span>
+                                  </div>
                               </div>
-                              <span className="text-sm font-medium">{u.name}</span>
+
+                              {/* 如果是自己，显示一个小圆点状态；如果是别人，暂时不能点（只读） */}
+                              {isMe && (
+                                  <div className="px-2 py-1 bg-white rounded-md text-[10px] text-sage-500 shadow-sm">
+                                      在线
+                                  </div>
+                              )}
                           </div>
-                          {u.id === currentUser?.id && <Icon name="check" className="text-terracotta-500" />}
-                      </button>
-                  ))}
+                      );
+                  })}
+              </div>
+
+              {/* 退出/切换按钮单独放在最下面 */}
+              <div className="mt-6 pt-4 border-t border-sage-100">
                   <button 
                     onClick={() => {
-                        localStorage.removeItem(STORAGE_KEY_CURRENT_USER_ID);
-                        setView(AppView.LOGIN);
+                        if(confirm("确定要退出当前账号吗？退出后需要重新登录。")) {
+                            localStorage.removeItem(STORAGE_KEY_CURRENT_USER_ID);
+                            setView(AppView.LOGIN);
+                        }
                     }}
-                    className="w-full mt-4 p-3 rounded-xl border border-dashed border-sage-300 text-sage-500 text-sm hover:bg-sage-50"
+                    className="w-full py-3 text-sm text-sage-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-colors flex items-center justify-center gap-2"
                   >
-                    + 添加新成员 / 重新登录
+                    <Icon name="arrow-right-from-bracket" />
+                    这不是我的账号？切换/退出
                   </button>
               </div>
           </div>

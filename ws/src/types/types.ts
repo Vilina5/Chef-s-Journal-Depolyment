@@ -2,8 +2,9 @@
 export interface User {
   id: string;
   name: string;
-  partnerId?: string; // Optional/Deprecated in new model
-  color: string; // Tailwind color class for avatar
+  phoneNumber: string; // [新增] 用于唯一标识身份
+  partnerId?: string;
+  color: string;
 }
 
 export interface Ingredient {

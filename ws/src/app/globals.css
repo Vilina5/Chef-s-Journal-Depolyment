@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全局基础样式（直接写字体族，替代 font-sans） */
+@layer base {
+  body {
+    /* 直接指定无衬线字体（和 font-sans 效果完全一致） */
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    @apply bg-sage-50 min-h-screen; /* 保留自定义颜色类 */
+  }
+}
