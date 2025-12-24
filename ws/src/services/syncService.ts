@@ -7,7 +7,7 @@ export interface AppState {
   mealLogs: MealLog[];
   users: User[];
   // 购物车在 types.ts 里没有定义接口，这里直接用 Record 定义
-  shoppingCart: Record<string, { bought: boolean; cost: number }>;
+  shoppingCart: Record<string, { bought: boolean; cost: number; unitPrice: number}>;
 }
 
 export const syncService = {
