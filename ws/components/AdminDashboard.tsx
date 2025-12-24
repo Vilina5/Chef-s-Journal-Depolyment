@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { User, Recipe, MealLog } from '../ws/src/types/types';
+import { User, Recipe, MealLog } from '../src/types/types';
 import { Icon } from './Icon';
 
 interface AdminDashboardProps {

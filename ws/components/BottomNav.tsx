@@ -1,5 +1,5 @@
 import React from 'react';
-import { AppView } from '../ws/src/types/types';
+import { AppView } from '../src/types/types';
 import { Icon } from './Icon';
 
 interface BottomNavProps {
